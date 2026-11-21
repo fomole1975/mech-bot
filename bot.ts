@@ -51,6 +51,7 @@ class Bot {
   soundBearing = 0
   noLosSince = -1
   prevTarget: number | null = null
+  hostile = new Map<number, number>() // enemy id -> hostile until t
   tacNode = -1
   tacT = -99
   failedTake = new Map<number, number>()
@@ -287,7 +288,9 @@ class Bot {
         if (e.by !== null && e.by !== undefined) {
           this.lastDmgT = t; this.lastDmgBearing = e.bearing ?? 0; this.lastDmgBy = e.by; this.lastDmgWeapon = e.weapon
         }
-      } else if (e.type === "take_failed") this.failedTake.set(e.id, t)
+        if (e.by !== null && e.by !== undefined && e.by < 100) this.hostile.set(e.by, t + 15)
+      } else if (e.type === "hit" && e.target < 100) this.hostile.set(e.target, t + 15)
+      else if (e.type === "take_failed") this.failedTake.set(e.id, t)
       else if (e.type === "took") this.pickups.delete(e.id)
     }
     while (this.dmgTaken.length && this.dmgTaken[0] < t - 3) this.dmgTaken.splice(0, 2)
@@ -381,11 +384,24 @@ class Bot {
     let tScore = Infinity
     target = null
     let threats: Enemy[] = []
+    const cands: Enemy[] = []
+    for (const e of this.enemies.values()) {
+      const d = hyp(e.pos[0] - P[0], e.pos[1] - P[1])
+      if (t - e.seen > 6) continue
+      if (d < 260) cands.push(e)
+      const aim = Math.abs(wrap(Math.atan2(P[1] - e.pos[1], P[0] - e.pos[0]) - e.aim[0])) < 0.15
+      if (aim && d < 230 && t - e.seen < 0.3 && (d < 120 || e.charging)) this.hostile.set(e.id, Math.max(this.hostile.get(e.id) ?? 0, t + 6))
+    }
+    const isHostile = (e: Enemy) => (this.hostile.get(e.id) ?? -1) > t || hyp(e.pos[0] - P[0], e.pos[1] - P[1]) < 55
+    const anyHostile = cands.some(isHostile)
+    // passive enemies: only pick a fight with a lone one while healthy
+    const allowPassive = !anyHostile && cands.length === 1 && hpFrac > 0.75
     for (const e of this.enemies.values()) {
       const d = hyp(e.pos[0] - P[0], e.pos[1] - P[1])
       const age = t - e.seen
       if (age > 6) continue
       if (d < 260) threats.push(e)
+      if (!isHostile(e) && !allowPassive) continue
       const c: V3 = [e.pos[0], e.pos[1], e.pos[2] + 4.5]
       const vis = this.los(muzzle, c)
       const aimingMe = Math.abs(wrap(Math.atan2(P[1] - e.pos[1], P[0] - e.pos[0]) - e.aim[0])) < 0.2
