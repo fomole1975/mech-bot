@@ -3,6 +3,7 @@ import { run, log, draw } from "./mechfight.ts"
 import { GameMap, Field, DX, DY } from "./map.ts"
 
 type V3 = number[]
+const JMIN = Number(process.env.JMIN ?? 0.15), JRANGE = Number(process.env.JRANGE ?? 0.2)
 const TAU = Math.PI * 2
 const wrap = (a: number) => { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI }
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v)
@@ -419,6 +420,7 @@ class Bot {
       const aimingMe = Math.abs(wrap(Math.atan2(P[1] - e.pos[1], P[0] - e.pos[0]) - e.aim[0])) < 0.2
       let s = d / 40 + e.hp / 350 + age * 0.8 + (vis ? 0 : 3) + (this.lastDmgBy === e.id && t - this.lastDmgT < 3 ? -1.5 : 0) + (aimingMe ? -0.8 : 0)
       if (prevT && e.id === prevT.id) s -= 0.6
+      if (e.weapons.includes("laser")) s -= 0.7
       if (d > 300) s += 10
       if (s < tScore) { tScore = s; target = e }
     }
@@ -450,7 +452,7 @@ class Bot {
       if (vis) this.noLosSince = -1
       else if (this.noLosSince < 0) this.noLosSince = t
       // preferred range
-      let R = 85
+      let R = Number(process.env.RGUN ?? 85)
       if (laserI >= 0) R = 110
       if (mortarI >= 0) R = 100
       if (lightI >= 0) R = 28
@@ -459,10 +461,26 @@ class Bot {
       const toE = [(e.pos[0] - P[0]) / Math.max(d, 1e-3), (e.pos[1] - P[1]) / Math.max(d, 1e-3)]
       if (t > this.jinkUntil) {
         this.jinkSign = this.rng() < 0.5 ? -1 : 1
-        this.jinkUntil = t + 0.35 + this.rng() * 0.7
+        this.jinkUntil = t + JMIN + this.rng() * JRANGE
       }
       const tang = [-toE[1] * this.jinkSign, toE[0] * this.jinkSign]
-      if (this.retreating) {
+      let lt: Enemy | null = null
+      for (const x of threats) {
+        if (!x.charging || t - x.seen > 0.25) continue
+        if (Math.abs(wrap(Math.atan2(P[1] - x.pos[1], P[0] - x.pos[0]) - x.aim[0])) > 0.12) continue
+        if (!this.los([x.pos[0], x.pos[1], x.pos[2] + 7], [P[0], P[1], P[2] + 4.5])) continue
+        lt = x; break
+      }
+      let duckNode = -1
+      if (lt && m) {
+        duckNode = this.findCover([lt], P, 14, 0)
+        if (duckNode >= 0 && hyp(m.nodeX(duckNode) - P[0], m.nodeY(duckNode) - P[1]) < 1.5) duckNode = -1
+      }
+      if (duckNode >= 0 && m) {
+        label = "duck"
+        want = this.navDir(m.nodeX(duckNode), m.nodeY(duckNode), P)
+        boost = me.energy > 5
+      } else if (this.retreating) {
         label = "retreat"
         // find cover
         if (t - this.coverT > 0.6 || this.coverNode < 0) { this.coverNode = this.findCover(threats, P); this.coverT = t }
@@ -934,7 +952,7 @@ class Bot {
   }
 
   /** nearest reachable node hidden from all recent threats */
-  findCover(threats: Enemy[], P: V3): number {
+  findCover(threats: Enemy[], P: V3, maxD = 90, minED = 30): number {
     const m = this.map, L = this.local
     if (!m || !L) return -1
     const ts = threats.filter((e) => this.t - e.seen < 4)
@@ -944,7 +962,7 @@ class Bot {
     for (let k = 0; k < list.length; k++) {
       const n = list[k]
       const d = L.d(n)
-      if (d === Infinity || d > 90) continue
+      if (d === Infinity || d > maxD) continue
       if ((n & 1) && d > 20) continue // thin out
       const x = m.nodeX(n), y = m.nodeY(n)
       const s0 = d
@@ -954,7 +972,7 @@ class Bot {
       let near = 0
       for (const e of ts) {
         const ed = hyp(e.pos[0] - x, e.pos[1] - y)
-        if (ed < 30) { hidden = false; break }
+        if (ed < minED) { hidden = false; break }
         if (m.los(e.pos[0], e.pos[1], e.pos[2] + 8, x, y, z + 6)) { hidden = false; break }
         near += Math.max(0, 80 - ed)
       }
