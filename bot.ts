@@ -30,6 +30,7 @@ class Bot {
   enemies = new Map<number, Enemy>()
   crates = new Map<number, Thing>()
   pickups = new Map<number, Thing>()
+  cubeMem = new Map<number, Thing>()
   lastDmgT = -99
   lastDmgBearing = 0
   lastDmgBy: number | null = null
@@ -290,6 +291,11 @@ class Bot {
         }
         if (e.by !== null && e.by !== undefined && e.by < 100) this.hostile.set(e.by, t + 15)
       } else if (e.type === "hit" && e.target < 100) this.hostile.set(e.target, t + 15)
+      else if (e.type === "kill") {
+        const v = this.enemies.get(e.target)
+        if (v) this.cubeMem.set(-1 - e.target, { id: -1 - e.target, pos: v.pos.slice(), seen: t })
+        this.enemies.delete(e.target)
+      }
       else if (e.type === "take_failed") this.failedTake.set(e.id, t)
       else if (e.type === "took") this.pickups.delete(e.id)
     }
@@ -318,6 +324,12 @@ class Bot {
     for (const c of obs.crates ?? []) { visCrates.add(c.id); this.crates.set(c.id, { id: c.id, pos: c.pos, hp: c.hp, seen: t }) }
     const visPick = new Set<number>()
     for (const p of obs.pickups ?? []) { visPick.add(p.id); this.pickups.set(p.id, { id: p.id, pos: p.pos, kind: p.kind, seen: t }) }
+    const visCube = new Set<number>()
+    for (const c of obs.cubes ?? []) { visCube.add(c.id); this.cubeMem.set(c.id, { id: c.id, pos: c.pos, seen: t }) }
+    for (const [id, c] of this.cubeMem) {
+      const d = hyp(c.pos[0] - P[0], c.pos[1] - P[1])
+      if (id < 0 ? d < 5 || t - c.seen > 60 : !visCube.has(id) && ((d < 30 && this.los(eye, [c.pos[0], c.pos[1], c.pos[2] + 0.3])) || t - c.seen > 90)) this.cubeMem.delete(id)
+    }
     // forget things that should be visible (near) but are not listed
     const nearR = this.cfg.vision?.near_range ?? 45
     for (const [id, c] of this.crates) {
@@ -415,7 +427,9 @@ class Bot {
     // ---- retreat state
     const nThreat = threats.filter((e) => t - e.seen < 3).length
     const thr = clamp(0.28 + 0.08 * (nThreat - 1), 0.28, 0.5)
-    if (!this.retreating && hpFrac < thr && nThreat > 0) this.retreating = true
+    const winning = target !== null && nThreat <= 1 && target.hp < me.hp * 0.7
+    if (!this.retreating && hpFrac < thr && nThreat > 0 && !winning) this.retreating = true
+    if (this.retreating && winning && target !== null && target.hp < me.hp * 0.5) this.retreating = false
     if (this.retreating && (hpFrac > thr + 0.35 || (nThreat === 0 && t - this.lastDmgT > 8))) this.retreating = false
 
     // ---- movement & aim decision
@@ -503,7 +517,7 @@ class Bot {
         } else want = tang
         boost = me.energy > 30
       }
-      const hurtHide = !underFire && hpFrac < 0.55 && t - this.lastDmgT < 25 && !outsideSafe
+      const hurtHide = !underFire && hpFrac < 0.75 && t - this.lastDmgT < 40 && !outsideSafe
       if (label !== "evade" && outsideSafe && (outsideNow || timeToShrink < 25 + dCenter / 10)) {
         goal = [gx, gy]; label = "zone"
         boost = outsideNow && me.energy > 20
@@ -542,8 +556,8 @@ class Bot {
       }
       // cubes
       if (!goal && lootOk) {
-        let bd = 90
-        for (const c of obs.cubes ?? []) {
+        let bd = 160
+        for (const c of this.cubeMem.values()) {
           const dd = hyp(c.pos[0] - P[0], c.pos[1] - P[1])
           if (m && c.pos[2] > m.groundAt(c.pos[0], c.pos[1]) + 3) continue
           if ((this.banned.get(c.id) ?? -1) > t) continue
@@ -636,10 +650,10 @@ class Bot {
       void slot1
     }
 
-    if (target && !this.retreating) {
-      let bc: any = null, bd = 22
-      for (const c of obs.cubes ?? []) { const dd = hyp(c.pos[0] - P[0], c.pos[1] - P[1]); if (dd < bd && Math.abs(c.pos[2] - P[2]) < 3) { bd = dd; bc = c } }
-      if (bc) { const nd = this.navDir(bc.pos[0], bc.pos[1], P); want = [want[0] * 0.5 + nd[0], want[1] * 0.5 + nd[1]] }
+    if (target && !this.retreating && hpFrac > 0.35) {
+      let bc: any = null, bd = 45
+      for (const c of this.cubeMem.values()) { const dd = hyp(c.pos[0] - P[0], c.pos[1] - P[1]); if (dd < bd && Math.abs(c.pos[2] - P[2]) < 3) { bd = dd; bc = c } }
+      if (bc) { const nd = this.navDir(bc.pos[0], bc.pos[1], P); const k = bd < 20 ? 1.2 : 0.7; want = [want[0] * 0.5 + nd[0] * k, want[1] * 0.5 + nd[1] * k] }
     }
     // ---- also grab pickups / cubes in reach during combat (cheap)
     if (target && act.take === undefined) {
